@@ -26,8 +26,9 @@ public class CNJoystick : MonoBehaviour
 
     public bool remoteTesting = false;
     // Editor variables
-    public float pixelToUnits = 1000f;
+    //public float pixelToUnits = 1000f;
     public PlacementSnap placementSnap = PlacementSnap.leftBottom;
+    public Rect tapZone;
 
     // Script-only public variables
     public Camera CurrentCamera { get; set; }
@@ -53,6 +54,8 @@ public class CNJoystick : MonoBehaviour
     private Vector3 invokeTouchPosition;
     // Relative position of the small joystick circle
     private Vector3 joystickRelativePosition;
+    // Screen point in units cacher variable
+    private Vector3 screenPointInUnits;
     // Magic Vector3, needed for different snap placements
     private Vector3 relativeExtentSummand;
     // This joystick is currently being tweaked
@@ -61,14 +64,32 @@ public class CNJoystick : MonoBehaviour
     private InputHandler CurrentInputHandler;
     // Distance to camera
     private float distanceToCamera = 0.5f;
+    // Half of screen sizes
+    private float halfScreenHeight;
+    private float halfScreenWidth;
+    // Full screen sizes
+    private float screenHeight;
+    private float screenWidth;
+    // Snap position, relative joystick position
+    private Vector3 snapPosition;
+    // (-halfScreenWidth, -halfScreenHeight, 0f)
+    // Visually, it's the bottom left point in local units
+    private Vector3 cleanPosition;
+    // Some transform cache variables
+    private Transform joystickBaseTransform;
+    private Transform joystickTransform;
+    private Transform transformCache;
 
     // Use this for initialization
     void Awake()
     {
         CurrentCamera = transform.parent.camera;
 
-        joystickBase = transform.FindChild("Base").gameObject;
+        transformCache = transform;
+        joystickBase = transformCache.FindChild("Base").gameObject;
+        joystickBaseTransform = joystickBase.transform;
         joystick = transform.FindChild("Joystick").gameObject;
+        joystickTransform = joystick.transform;
 
         InitialCalculations();
 
@@ -76,9 +97,9 @@ public class CNJoystick : MonoBehaviour
         CurrentInputHandler = TouchInputHandler;
 #endif
 #if UNITY_EDITOR || UNITY_WEBPLAYER || UNITY_STANDALONE
+        // gameObject.SetActive(false);
         CurrentInputHandler = MouseInputHandler;
 #endif
-
         if (remoteTesting)
             CurrentInputHandler = TouchInputHandler;
     }
@@ -90,13 +111,12 @@ public class CNJoystick : MonoBehaviour
     }
 
     /** Our touch Input handler
-     * We decide whether we should Raycast or take the Screen coordinates to tweak the joystick
+     * Most of the work is done in this function
      */
     void TouchInputHandler()
     {
         // Current touch count
         int touchCount = Input.touchCount;
-
         // If we're not yet tweaking, we should check
         // whether any touch lands on our BoxCollider or not
         if (!isTweaking)
@@ -107,9 +127,9 @@ public class CNJoystick : MonoBehaviour
                 Touch touch = Input.GetTouch(i);
                 // We check it's phase.
                 // If it's not a Begin phase, finger didn't tap the screen
-                // it's probably just slided to our BoxCollider
-                // So for the sake of optimization we won't even Raycast this touch
-                // But if it's a tap, we check if it lands on our BoxCollider 
+                // it's probably just slided to our TapRect
+                // So for the sake of optimization we won't do anything with this touch
+                // But if it's a tap, we check if it lands on our TapRect 
                 // See TouchOccured function
                 if (touch.phase == TouchPhase.Began && TouchOccured(touch.position))
                 {
@@ -121,7 +141,6 @@ public class CNJoystick : MonoBehaviour
                 }
             }
         }
-        // If we're tweaking, we don't need to Raycast anything
         // We take Touch screen position and convert it to local joystick - relative coordinates
         else
         {
@@ -143,10 +162,10 @@ public class CNJoystick : MonoBehaviour
                         FingerLiftedEvent();
                 }
             }
-            // If user didn't lift his finger this time
+            // If user didn't lift his finger this frame
             if (!isGoingToEnd)
             {
-                // We find our current Touch index (it's not equal to Finger index)
+                // We find our current Touch index (it's not always equal to Finger index)
                 int currentTouchIndex = FindMyFingerId();
                 if (currentTouchIndex != -1)
                 {
@@ -179,13 +198,67 @@ public class CNJoystick : MonoBehaviour
     }
 #endif
     /**
-     * Frustum calculation
+     * Snappings calculation
      * Joystick radius calculation based on specified pixel to units value
-     * Note that frustum won't change at runtime, tweak the joystick distance in the inspector
      * Initial on-screen placement, relative to the specified camera
      */
     void InitialCalculations()
     {
+        halfScreenHeight = CurrentCamera.orthographicSize;
+        halfScreenWidth = halfScreenHeight * CurrentCamera.aspect;
+
+        screenHeight = halfScreenHeight * 2f;
+        screenWidth = halfScreenWidth * 2f;
+
+        snapPosition = new Vector3();
+        cleanPosition = new Vector3(-halfScreenWidth, -halfScreenHeight);
+
+        switch (placementSnap)
+        {
+            // We do nothing, it's a default position
+            case PlacementSnap.leftBottom:
+                snapPosition.x = -halfScreenWidth + tapZone.width / 2f - tapZone.x;
+                snapPosition.y = -halfScreenHeight + tapZone.height / 2f - tapZone.y;
+
+                // Tap zone change so we can utilize Rect's .Contains() method
+                tapZone.x = 0f;
+                tapZone.y = 0f;
+                break;
+            // We swap Y component
+            case PlacementSnap.leftTop:
+                snapPosition.x = -halfScreenWidth + tapZone.width / 2f - tapZone.x;
+                snapPosition.y = halfScreenHeight - tapZone.height / 2f - tapZone.y;
+
+                // Tap zone change so we can utilize Rect's .Contains() method
+                tapZone.x = 0f;
+                tapZone.y = screenHeight - tapZone.height;
+                break;
+            // We swap X component
+            case PlacementSnap.rightBottom:
+                snapPosition.x = halfScreenWidth - tapZone.width / 2f - tapZone.x;
+                snapPosition.y = -halfScreenHeight + tapZone.height / 2f - tapZone.y;
+
+                // Tap zone change so we can utilize Rect's .Contains() method
+                tapZone.x = screenWidth - tapZone.width;
+                tapZone.y = 0f;
+                break;
+            // We swap both X and Y component
+            case PlacementSnap.rightTop:
+                snapPosition.x = halfScreenWidth - tapZone.width / 2f - tapZone.x;
+                snapPosition.y = halfScreenHeight - tapZone.height / 2f - tapZone.y;
+
+                // Tap zone change so we can utilize Rect's .Contains() method
+                tapZone.x = screenWidth - tapZone.width;
+                tapZone.y = screenHeight - tapZone.height;
+                break;
+        }
+        transformCache.localPosition = snapPosition;
+
+        SpriteRenderer joystickBaseSpriteRenderer = joystickBase.renderer as SpriteRenderer;
+        joystickBaseRadius = joystickBaseSpriteRenderer.bounds.extents.x;
+
+        /** OBSOLETE CODE USED FOR PERSPECTIVE CAMERAS 
+         *  Some crazy stuff with pyramid frustums and things
         distanceToCamera = transform.localPosition.z;
 
         // We need to find clear bounds of our Collider so we place our joystick to world's zero
@@ -248,6 +321,7 @@ public class CNJoystick : MonoBehaviour
         transform.localPosition = new Vector3(x, y, distanceToCamera);
         joystickRelativePosition = new Vector3();
         //=======================================================================================
+         * */
     }
 
     /**
@@ -260,6 +334,18 @@ public class CNJoystick : MonoBehaviour
      */
     bool TouchOccured(Vector3 touchPosition)
     {
+        ScreenPointToRelativeFrustumPoint(touchPosition);
+        if (tapZone.Contains(screenPointInUnits))
+        {
+            isTweaking = true;
+            invokeTouchPosition = screenPointInUnits;
+            transformCache.localPosition = cleanPosition;
+            joystickBaseTransform.localPosition = invokeTouchPosition;
+            joystickTransform.localPosition = invokeTouchPosition;
+            return true;
+        }
+
+        /** OBSOLETE
         Ray screenRay = CurrentCamera.ScreenPointToRay(touchPosition);
         RaycastHit hit;
         if (Physics.Raycast(screenRay, out hit, distanceToCamera * 2f))
@@ -273,7 +359,7 @@ public class CNJoystick : MonoBehaviour
                 joystick.transform.localPosition = invokeTouchPosition;
                 return true;
             }
-        }
+        }* */
         return false;
     }
 
@@ -285,18 +371,18 @@ public class CNJoystick : MonoBehaviour
         // We convert our screen coordinates of the touch to local frustum coordinates
         ScreenPointToRelativeFrustumPoint(desiredPosition);
         // And then we find our joystick relative position
-        Vector3 dragDirection = joystickRelativePosition - invokeTouchPosition;
+        Vector3 dragDirection = screenPointInUnits - invokeTouchPosition;
         // If the joystick is inside it's base, we keep it's position under a finger
         // sqrMagnitude is used for optimization, as Multiplication operation is much cheaper than Square Root
         if (dragDirection.sqrMagnitude <= joystickBaseRadius * joystickBaseRadius)
         {
-            joystick.transform.localPosition = joystickRelativePosition;
+            joystickTransform.localPosition = screenPointInUnits;
             dragDirection /= joystickBaseRadius;
         }
         // But if we drag our finger too far, joystick will remain at the border of it's base
         else
         {
-            joystick.transform.localPosition = invokeTouchPosition + dragDirection.normalized * joystickBaseRadius;
+            joystickTransform.localPosition = invokeTouchPosition + dragDirection.normalized * joystickBaseRadius;
             dragDirection.Normalize();
         }
 
@@ -313,8 +399,9 @@ public class CNJoystick : MonoBehaviour
     void ResetJoystickPosition()
     {
         isTweaking = false;
-        joystickBase.transform.localPosition = Vector3.zero;
-        joystick.transform.localPosition = Vector3.zero;
+        transformCache.localPosition = snapPosition;
+        joystickBaseTransform.localPosition = Vector3.zero;
+        joystickTransform.localPosition = Vector3.zero;
         myFingerId = -1;
     }
 
@@ -327,11 +414,16 @@ public class CNJoystick : MonoBehaviour
         float screenPointXPercent = point.x / Screen.width;
         float screenPointYPercent = point.y / Screen.height;
 
+        screenPointInUnits.x = screenPointXPercent * screenWidth;
+        screenPointInUnits.y = screenPointYPercent * screenHeight;
+        screenPointInUnits.z = 0f;
+        /** OBSOLETE
         // Dirty magic again, finding super - local coordinates of the touch position
         joystickRelativePosition.x = screenPointXPercent * frustumWidth;
         joystickRelativePosition.y = screenPointYPercent * frustumHeight;
         joystickRelativePosition -= relativeExtentSummand;
         joystickRelativePosition.z = 0f;
+         * */
     }
 
     // Sometimes when user lifts his finger, current touch index changes.
@@ -351,4 +443,14 @@ public class CNJoystick : MonoBehaviour
         // Usually this happend after user lifts the finger which he touched first
         return -1;
     }
+
+    void OnDrawGizmos()
+    {
+        Gizmos.color = Color.red;
+        Vector3 gizmoPosition = new Vector3(transform.position.x + tapZone.x, transform.position.y + tapZone.y, transform.position.z);
+        Gizmos.DrawWireCube(gizmoPosition, new Vector3(tapZone.width, tapZone.height));
+    }
+
+
+
 }
