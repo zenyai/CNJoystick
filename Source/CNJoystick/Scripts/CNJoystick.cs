@@ -183,6 +183,8 @@ public class CNJoystick : MonoBehaviour
         if (Input.GetMouseButtonDown(0))
         {
             TouchOccured(Input.mousePosition);
+			if (FingerTouchedEvent != null)
+				FingerTouchedEvent();
         }
         if (Input.GetMouseButton(0))
         {
@@ -194,6 +196,8 @@ public class CNJoystick : MonoBehaviour
         if (Input.GetMouseButtonUp(0))
         {
             ResetJoystickPosition();
+			if (FingerLiftedEvent != null)
+				FingerLiftedEvent();
         }
     }
 #endif
